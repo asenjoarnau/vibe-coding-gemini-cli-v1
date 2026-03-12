@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Moto Highway - Realismo</title>
+    <style>
+        body {
+            margin: 0;
+            background: #111;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: white;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            overflow: hidden;
+        }
+        #game-container {
+            position: relative;
+            border: 8px solid #333;
+            border-radius: 20px;
+            background: #0a4d0a; /* Fondo bosque base */
+            overflow: hidden;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+        }
+        canvas {
+            display: block;
+        }
+        #ui {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            pointer-events: none;
+            background: rgba(0,0,0,0.7);
+            padding: 10px 15px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.3);
+            z-index: 10;
+            min-width: 80px;
+        }
+        .stat { font-size: 14px; font-weight: bold; margin-bottom: 4px; color: #eee; }
+        #score-val { color: #44ff44; }
+        #speed-val { color: #ffffff; font-size: 20px; font-style: italic; font-weight: 900; }
+        #multiplier-ui { color: #ffcc00; display: none; font-size: 14px; margin-top: 5px; animation: pulse 1s infinite; }
+        
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+
+        #game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.9);
+            padding: 40px;
+            border-radius: 30px;
+            text-align: center;
+            display: none;
+            border: 4px solid #fff;
+            width: 300px;
+            z-index: 100;
+        }
+        button {
+            padding: 15px 40px;
+            font-size: 20px;
+            cursor: pointer;
+            background: #fff;
+            color: #000;
+            border: none;
+            border-radius: 10px;
+            font-weight: bold;
+            margin-top: 25px;
+            text-transform: uppercase;
+            transition: 0.2s;
+        }
+        button:hover {
+            background: #ccc;
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <canvas id="canvas"></canvas>
+    <div id="ui">
+        <div class="stat">PUNTOS: <span id="score-val">0</span></div>
+        <div class="stat"><span id="speed-val">100</span> <small>KM/H</small></div>
+        <div id="multiplier-ui">X2 ACTIVADO: <span id="power-timer">10</span>s</div>
+    </div>
+    <div id="game-over">
+        <h1 style="color: #fff; margin: 0; font-size: 30px;">ACCIDENTE</h1>
+        <p style="font-size: 24px; margin: 20px 0;">TOTAL: <span id="final-score">0</span></p>
+        <button onclick="resetGame()">REINTENTAR</button>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const scoreVal = document.getElementById('score-val');
+    const speedVal = document.getElementById('speed-val');
+    const multiplierUI = document.getElementById('multiplier-ui');
+    const powerTimerEl = document.getElementById('power-timer');
+    const gameOverEl = document.getElementById('game-over');
+    const finalScoreEl = document.getElementById('final-score');
+
+    canvas.width = 400;
+    canvas.height = 750;
+
+    const LANES = [85, 175, 265];
+    let gameActive = true;
+    let score = 0;
+    let baseSpeed = 5.0; 
+    const MAX_BASE_SPEED = 18.0; 
+    
+    let spawnTimer = 0;
+    let powerSpawnTimer = 0;
+    let signTimer = 0;
+    let birdTimer = 0;
+    let nextBirdTime = (15 + Math.random() * 10) * 60; // Entre 15 y 25 seg
+
+    let roadOffset = 0;
+    let cars = [];
+    let powerUps = [];
+    let signs = [];
+    let birds = [];
+
+    let isDoublePoints = false;
+    let powerUpTimeLeft = 0;
+
+    const player = {
+        x: canvas.width / 2 - 17,
+        y: canvas.height - 130,
+        w: 34,
+        h: 60,
+        speed: 7.5,
+        lean: 0,
+        color: '#d40000' // Moto roja realista
+    };
+
+    const keys = {};
+    window.addEventListener('keydown', e => keys[e.code] = true);
+    window.addEventListener('keyup', e => keys[e.code] = false);
+
+    class EnemyCar {
+        constructor(laneIndex) {
+            this.w = 52; this.h = 95;
+            this.lane = laneIndex;
+            this.x = LANES[this.lane];
+            this.y = -200;
+            this.color = `hsl(${Math.random() * 360}, 50%, 40%)`;
+            this.passed = false;
+        }
+        update() {
+            this.y += baseSpeed; 
+            if (player.x < this.x + this.w && player.x + player.w > this.x &&
+                player.y < this.y + this.h && player.y + player.h > this.y) {
+                endGame();
+            }
+            if (this.y > canvas.height && !this.passed) {
+                this.passed = true;
+                score += (isDoublePoints ? 2 : 1);
+                scoreVal.innerText = score;
+                if (baseSpeed < MAX_BASE_SPEED) baseSpeed += 0.2; 
+            }
+        }
+        draw() {
+            ctx.fillStyle = this.color;
+            ctx.beginPath(); ctx.roundRect(this.x, this.y, this.w, this.h, 5); ctx.fill();
+            // Ventanas
+            ctx.fillStyle = 'rgba(0,0,0,0.5)'; 
+            ctx.fillRect(this.x + 5, this.y + 15, this.w - 10, 25); // Delantera
+            ctx.fillRect(this.x + 5, this.y + 65, this.w - 10, 15); // Trasera
+            // Luces traseras
+            ctx.fillStyle = '#ff0000'; 
+            ctx.fillRect(this.x + 4, this.y + this.h - 8, 12, 5);
+            ctx.fillRect(this.x + this.w - 16, this.y + this.h - 8, 12, 5);
+        }
+    }
+
+    class PowerUp {
+        constructor(laneIndex) {
+            this.w = 35; this.h = 35;
+            this.lane = laneIndex;
+            this.x = LANES[this.lane] + 10;
+            this.y = -100;
+        }
+        update() {
+            this.y += baseSpeed;
+            if (player.x < this.x + this.w && player.x + player.w > this.x &&
+                player.y < this.y + this.h && player.y + player.h > this.y) {
+                activateDoublePoints(); return false;
+            }
+            return this.y < canvas.height + 100;
+        }
+        draw() {
+            ctx.fillStyle = '#ffcc00';
+            ctx.beginPath(); ctx.arc(this.x + this.w/2, this.y + this.h/2, this.w/2, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = '#000'; ctx.font = 'bold 16px Arial'; ctx.textAlign = 'center';
+            ctx.fillText('X2', this.x + this.w/2, this.y + this.h/2 + 6);
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+        }
+    }
+
+    class SpeedSign {
+        constructor() {
+            this.side = Math.random() > 0.5 ? 'left' : 'right';
+            this.x = this.side === 'left' ? 25 : canvas.width - 55;
+            this.y = -100;
+            this.limit = [80, 100, 120][Math.floor(Math.random() * 3)];
+        }
+        update() {
+            this.y += baseSpeed;
+            return this.y < canvas.height + 100;
+        }
+        draw() {
+            // Poste
+            ctx.fillStyle = '#777';
+            ctx.fillRect(this.x + 13, this.y + 20, 4, 40);
+            // Círculo señal
+            ctx.fillStyle = 'white';
+            ctx.strokeStyle = 'red';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.arc(this.x + 15, this.y + 15, 15, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            // Texto número
+            ctx.fillStyle = 'black';
+            ctx.font = 'bold 12px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(this.limit, this.x + 15, this.y + 20);
+        }
+    }
+
+    class Bird {
+        constructor() {
+            this.x = Math.random() * canvas.width;
+            this.y = -50;
+            this.speedX = (Math.random() - 0.5) * 2;
+            this.speedY = baseSpeed + 1 + Math.random() * 2;
+            this.wingPos = 0;
+        }
+        update() {
+            this.x += this.speedX;
+            this.y += this.speedY;
+            this.wingPos += 0.2;
+            return this.y < canvas.height + 100 && this.x > -50 && this.x < canvas.width + 50;
+        }
+        draw() {
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 2;
+            let wingSpread = Math.sin(this.wingPos) * 10;
+            ctx.beginPath();
+            ctx.moveTo(this.x - 10, this.y + wingSpread);
+            ctx.quadraticCurveTo(this.x, this.y - 5, this.x + 10, this.y + wingSpread);
+            ctx.stroke();
+        }
+    }
+
+    function activateDoublePoints() {
+        isDoublePoints = true; powerUpTimeLeft = 10; multiplierUI.style.display = 'block';
+    }
+
+    function drawRoad() {
+        // Fondo Bosque
+        ctx.fillStyle = '#0a4d0a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Árboles en movimiento (Bosque)
+        ctx.fillStyle = '#1b3d1b';
+        for (let i = -150; i < canvas.height + 150; i += 120) {
+            let y = (i + roadOffset) % (canvas.height + 240) - 120;
+            // Lado izquierdo
+            ctx.beginPath();
+            ctx.arc(20, y, 30, 0, Math.PI * 2);
+            ctx.arc(45, y + 40, 25, 0, Math.PI * 2);
+            ctx.arc(15, y + 70, 20, 0, Math.PI * 2);
+            ctx.fill();
+            // Lado derecho
+            ctx.beginPath();
+            ctx.arc(380, y + 20, 30, 0, Math.PI * 2);
+            ctx.arc(355, y + 50, 25, 0, Math.PI * 2);
+            ctx.arc(385, y - 20, 20, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Asfalto (Gris Autopista)
+        ctx.fillStyle = '#444';
+        ctx.fillRect(70, 0, canvas.width - 140, canvas.height);
+        
+        // Arcén (Bordes carretera)
+        ctx.fillStyle = '#333';
+        ctx.fillRect(70, 0, 5, canvas.height);
+        ctx.fillRect(canvas.width - 75, 0, 5, canvas.height);
+
+        // Líneas laterales blancas continuas
+        ctx.fillStyle = 'white';
+        ctx.fillRect(75, 0, 3, canvas.height);
+        ctx.fillRect(canvas.width - 78, 0, 3, canvas.height);
+        
+        // Líneas discontinuas blancas de carriles
+        ctx.setLineDash([40, 60]);
+        ctx.lineDashOffset = -roadOffset;
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 4;
+        
+        ctx.beginPath();
+        // Línea 1
+        ctx.moveTo(158, 0);
+        ctx.lineTo(158, canvas.height);
+        // Línea 2
+        ctx.moveTo(242, 0);
+        ctx.lineTo(242, canvas.height);
+        ctx.stroke();
+
+        roadOffset += baseSpeed;
+    }
+
+    function drawPlayer() {
+        ctx.save();
+        let shake = (baseSpeed > 15) ? (Math.random() - 0.5) * 2 : 0;
+        ctx.translate(player.x + player.w/2 + shake, player.y + player.h/2 + shake);
+        ctx.rotate(player.lean * 0.04); 
+
+        // Brillo opcional solo en X2
+        if (isDoublePoints) { ctx.shadowBlur = 15; ctx.shadowColor = '#ffcc00'; }
+        
+        // Cuerpo moto
+        ctx.fillStyle = '#111'; // Neumáticos/partes negras
+        ctx.fillRect(-player.w/2, -player.h/2, player.w, player.h);
+        
+        // Chasis rojo
+        ctx.fillStyle = player.color;
+        ctx.beginPath(); 
+        ctx.roundRect(-player.w/2 + 5, -player.h/2 + 10, player.w - 10, 40, 10); 
+        ctx.fill();
+        
+        // Asiento
+        ctx.fillStyle = '#222';
+        ctx.fillRect(-8, 5, 16, 15);
+
+        // CASCO
+        ctx.fillStyle = 'white';
+        ctx.beginPath(); 
+        ctx.arc(0, -10, 10, 0, Math.PI*2); 
+        ctx.fill();
+
+        // Visera
+        ctx.fillStyle = '#000';
+        ctx.fillRect(-7, -15, 14, 5);
+
+        ctx.restore();
+    }
+
+    function update() {
+        if (!gameActive) return;
+
+        let moving = false;
+        if ((keys['ArrowLeft'] || keys['KeyA']) && player.x > 78) {
+            player.x -= player.speed;
+            player.lean = Math.max(player.lean - 1, -5);
+            moving = true;
+        }
+        if ((keys['ArrowRight'] || keys['KeyD']) && player.x < canvas.width - 78 - player.w) {
+            player.x += player.speed;
+            player.lean = Math.min(player.lean + 1, 5);
+            moving = true;
+        }
+
+        if (!moving) {
+            if (player.lean > 0) player.lean -= 0.5;
+            if (player.lean < 0) player.lean += 0.5;
+        }
+
+        speedVal.innerText = Math.floor(baseSpeed * 20);
+
+        if (isDoublePoints) {
+            powerUpTimeLeft -= 1/60;
+            powerTimerEl.innerText = Math.ceil(powerUpTimeLeft);
+            if (powerUpTimeLeft <= 0) { isDoublePoints = false; multiplierUI.style.display = 'none'; }
+        }
+
+        spawnTimer++;
+        if (spawnTimer > 30 && cars.length < 2) {
+            let occupiedLanes = cars.map(c => c.lane);
+            let availableLanes = [0, 1, 2].filter(l => !occupiedLanes.includes(l));
+            let randomLane = availableLanes[Math.floor(Math.random() * availableLanes.length)];
+            cars.push(new EnemyCar(randomLane));
+            spawnTimer = 0;
+        }
+
+        powerSpawnTimer++;
+        if (powerSpawnTimer > 800 && !isDoublePoints) {
+            let occupiedLanes = cars.map(c => c.lane);
+            let availableLanes = [0, 1, 2].filter(l => !occupiedLanes.includes(l));
+            if (availableLanes.length > 0) { powerUps.push(new PowerUp(availableLanes[0])); powerSpawnTimer = 0; }
+        }
+
+        // Timer señales (30 seg = 1800 frames)
+        signTimer++;
+        if (signTimer > 1800) {
+            signs.push(new SpeedSign());
+            signTimer = 0;
+        }
+
+        // Timer pájaros (15-25 seg)
+        birdTimer++;
+        if (birdTimer > nextBirdTime) {
+            birds.push(new Bird());
+            birdTimer = 0;
+            nextBirdTime = (15 + Math.random() * 10) * 60;
+        }
+
+        cars.forEach(car => car.update());
+        cars = cars.filter(car => car.y < canvas.height + 250);
+        powerUps = powerUps.filter(p => p.update());
+        signs = signs.filter(s => s.update());
+        birds = birds.filter(b => b.update());
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        drawRoad();
+        signs.forEach(s => s.draw());
+        powerUps.forEach(p => p.draw());
+        cars.forEach(car => car.draw());
+        birds.forEach(b => b.draw());
+        drawPlayer();
+    }
+
+    function gameLoop() { update(); draw(); if (gameActive) requestAnimationFrame(gameLoop); }
+
+    function endGame() { gameActive = false; gameOverEl.style.display = 'block'; finalScoreEl.innerText = score; }
+
+    function resetGame() {
+        score = 0; scoreVal.innerText = '0'; baseSpeed = 5.0; 
+        spawnTimer = 0; powerSpawnTimer = 0; signTimer = 0; birdTimer = 0;
+        cars = []; powerUps = []; signs = []; birds = [];
+        isDoublePoints = false; multiplierUI.style.display = 'none';
+        player.x = canvas.width / 2 - 17; player.lean = 0; gameActive = true; gameOverEl.style.display = 'none'; gameLoop();
+    }
+    gameLoop();
+</script>
+</body>
+</html>
